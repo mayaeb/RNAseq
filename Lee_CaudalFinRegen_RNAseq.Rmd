@@ -1,0 +1,164 @@
+---
+title: "Lee_CaudalFinRegen_RNAseq"
+author: "Maya Emmons-Bell"
+date: '2022-06-10'
+output: html_document
+---
+
+Analysis of bulk RNAseq data from 0DPA and 4DPA regenerating zebrafish caudal fins 
+
+Data from Lee et al., Genome Biology, 2020
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load libraries 
+```{r libraries}
+library(biomaRt)
+library(DESeq2)
+library(EnhancedVolcano)
+library(pheatmap)
+library(vsn)
+library(RColorBrewer)
+```
+
+
+Read in feature count data (from GSE126701)
+```{r load-data}
+counts <- read_table("GSE126701_RNA_finRegen_featureCounts.txt.gz") 
+head(counts)
+```
+Data wrangling and prep
+```{r}
+#data wrangling
+counts <- column_to_rownames(counts, var = "Geneid") 
+sum(duplicated(rownames(counts)))
+
+counts <- counts %>% as.matrix()
+
+#create metadata file 
+fish_metadata <- NULL
+fish_metadata$sample.ids <- colnames(counts)
+fish_metadata$dpa <- c("0dpa", "0dpa", "4dpa","4dpa","0dpa", "0dpa", "4dpa","4dpa")
+fish_metadata <- as.matrix(fish_metadata)
+
+```
+
+DE analysis 
+```{r}
+dds <- DESeqDataSetFromMatrix(countData=counts, 
+                              colData=fish_metadata, 
+                              design=~dpa)
+
+
+dds <- DESeq(dds)
+results <- results(dds)
+head(results(dds, tidy=TRUE))
+summary(results)
+
+#sort by pvalue
+results <- results[order(results$pvalue),]
+head(results)
+
+#plot most significant genes 
+plotCounts(dds, gene="ENSDARG00000069630", intgroup="dpa")
+plotCounts(dds, gene="ENSDARG00000032820", intgroup="dpa")
+plotCounts(dds, gene="ENSDARG00000010641", intgroup="dpa")
+plotCounts(dds, gene="ENSDARG00000045316", intgroup="dpa")
+plotCounts(dds, gene="ENSDARG00000092920", intgroup="dpa")
+plotCounts(dds, gene="ENSDARG00000019949", intgroup="dpa")
+```
+
+Translate ensemblIDs to gene symbols for plotting
+```{r translate-ensIDs}
+#get ensIDs from results object
+to_translate <- results@rownames
+
+#use biomaRt to translate ensemblIDs to gene symbols, mark un-translated IDs with "NA", drop those columns 
+listEnsembl()
+ensembl <- useEnsembl(biomart = "genes")
+datasets <- listDatasets(ensembl)
+
+ensembl.con <- useMart("ensembl", dataset = "drerio_gene_ensembl")
+
+attr <- listAttributes(ensembl.con)
+filt <- listFilters(ensembl.con)
+
+translated <- getBM(attributes = c("ensembl_gene_id", "external_gene_name"), 
+      filters = "ensembl_gene_id", 
+      values = to_translate, 
+      mart = ensembl.con)
+
+#restructure to data frame for merging 
+to_translate <- to_translate %>% as.data.frame()
+colnames(to_translate) <- c("ensembl_gene_id")
+
+joined <- dplyr::left_join(to_translate, translated, by = "ensembl_gene_id", all.y=TRUE)
+new_names <- joined$external_gene_name
+new_names[is.na(new_names)] = c("un-mapped")
+results@rownames <- new_names
+```
+
+
+Violin plot 
+```{r vln-plot}
+   EnhancedVolcano(results,
+    lab = rownames(results),
+    x = 'log2FoldChange',
+    y = 'pvalue',
+    title = 'Differential expression: 0DPA versus 4DPA caudal fin',
+    pCutoff = 10e-12,
+    FCcutoff = 0.5,
+    pointSize = 3.0,
+    labSize = 6.0, 
+    colAlpha = 1) 
+```
+Transform data for downstream processing 
+```{r}
+#variance stabalize data 
+vsdata <- vst(dds, blind=FALSE)
+#reg. log transform
+rld <- rlog(dds, blind=FALSE)
+
+ntd <- normTransform(dds)
+
+meanSdPlot(assay(rld))
+```
+
+Run PCA 
+```{r pca}
+#variance stabalize data 
+vsdata <- vst(dds, blind=FALSE)
+plotPCA(vsdata, intgroup = c("dpa"))
+#there's a good amount of technical variability in the data set, and also data cluster by cell type (makes sense)
+```
+
+Create heatmaps
+```{r heatmap}
+
+select <- order(rowMeans(counts(dds,normalized=TRUE)),
+                decreasing=TRUE)[1:20]
+df <- as.data.frame(colData(dds)[,c("sample.id","dpa")])
+pheatmap(assay(ntd)[select,], cluster_rows=FALSE, show_rownames=FALSE,
+         cluster_cols=FALSE, annotation_col=df)
+
+pheatmap(assay(vsdata)[select,], cluster_rows=FALSE, show_rownames=FALSE,
+         cluster_cols=FALSE, annotation_col=df)
+
+pheatmap(assay(rld)[select,], cluster_rows=FALSE, show_rownames=FALSE,
+         cluster_cols=FALSE, annotation_col=df)
+
+
+#heatmap of sample distances 
+sampleDists <- dist(t(assay(vsdata)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vsdata$sample.id, vsdata$dpa, sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+```
+
