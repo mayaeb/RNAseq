@@ -1,0 +1,213 @@
+---
+title: "Kang_CaudalFinRegen_RNAseq"
+author: "Maya Emmons-Bell"
+date: "6/14/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Analysis of bulk RNAseq data from 0DPA and 4DPA regenerating zebrafish caudal fins 
+
+Data from Kang et al., Nature, 2016
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load libraries 
+```{r libraries}
+library(biomaRt)
+library(DESeq2)
+library(EnhancedVolcano)
+library(pheatmap)
+library(vsn)
+library(RColorBrewer)
+library(org.Dr.eg.db)
+library(data.table)
+library(tidyverse)
+library(apeglm)
+```
+
+Import count matrices, add metadata, merge into one matrix
+```{r}
+uninjured <- fread("~/Desktop/Poss_RNAseq/count_matrices/GSE76564_Uninjured_fin_Control_counts.txt.gz")
+regen <- fread("~/Desktop/Poss_RNAseq/count_matrices/GSE76564_Regenerate_fin_counts.txt.gz")
+colnames(uninjured) <- c("gene", "uninjured_rep1", "uninjured_rep2")
+colnames(regen) <- c("gene", "regen_rep1", "regen_rep2")
+
+caudal_regen <- merge(uninjured, regen, by = "gene")
+caudal_regen <- column_to_rownames(caudal_regen, var = "gene") 
+
+
+#filter genes that have very low (>10) counts 
+caudal_regen <- caudal_regen %>%
+  dplyr::filter(rowSums(.) >= 10)
+
+#create matrix for DESeq2
+caudal_regen <- caudal_regen %>% as.matrix()
+
+head(caudal_regen)
+```
+
+Create metadata matrix
+```{r}
+#create metadata file 
+metadata <- NULL
+dpa <- c("uninjured", "uninjured", "4DPA", "4DPA")
+sample.id <- c("uninjured_rep1", "uninjured_rep2", "regen_rep1", "regen_rep2")
+
+metadata <- data.frame(dpa, sample.id) 
+rownames(metadata) <- metadata$sample.id
+
+metadata <- as.matrix(metadata)
+```
+
+Run DEseq2
+```{r}
+dds <- DESeqDataSetFromMatrix(countData=caudal_regen, 
+                              colData=metadata, 
+                              design=~dpa)
+#specify the order of dpa factor
+dds$dpa <- factor(dds$dpa, levels = c("uninjured","4DPA"))
+dds <- DESeq(dds)
+results <- results(dds)
+
+#add shrunken log fold change estimates 
+results <- lfcShrink(
+  dds, # The original DESeq2 object after running DESeq()
+  coef = 2, # The log fold change coefficient used in DESeq(); the default is 2.
+  res = results # The original DESeq2 results table
+)
+
+head(results)
+summary(results)
+
+```
+filter, sort, coerce into df
+```{r}
+
+deseq_df <- results %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("gene") %>%
+  # add a column for significance threshold results
+  dplyr::mutate(threshold = padj < 0.05) %>%
+  dplyr::arrange(dplyr::desc(log2FoldChange))
+
+#test by plotting (this gene, homologous to a human linker histone, is dramatically increased during regeneration)
+plotCounts(dds, gene = "ENSDARG00000077456", intgroup = "dpa")
+
+
+#select the top 50 upregulated regeneration genes for scoring human samples
+top_genes <- deseq_df[1:100,]
+top_genes_to_translate <- top_genes$gene
+```
+
+
+Translate top regeneration gene ensemblIDs to symbols for plotting
+```{r translate-ensIDs}
+
+#use biomaRt to translate ensemblIDs to gene symbols, mark un-translated IDs with "NA", drop those columns 
+listEnsembl()
+ensembl <- useEnsembl(biomart = "genes")
+datasets <- listDatasets(ensembl)
+
+ensembl.con <- useMart("ensembl", dataset = "drerio_gene_ensembl")
+
+attr <- listAttributes(ensembl.con)
+filt <- listFilters(ensembl.con)
+
+translated <- getBM(attributes = c("ensembl_gene_id", "external_gene_name"), 
+      filters = "ensembl_gene_id", 
+      values = top_genes_to_translate, 
+      mart = ensembl.con)
+
+
+####### this is section for translating whole expression matrices
+#restructure to data frame for merging 
+to_translate <- to_translate %>% as.data.frame()
+colnames(to_translate) <- c("ensembl_gene_id")
+
+joined <- dplyr::left_join(to_translate, translated, by = "ensembl_gene_id", all.y=TRUE)
+new_names <- joined$external_gene_name
+new_names[is.na(new_names)] = c("un-mapped")
+results@rownames <- new_names
+
+
+###### find human orthologues of top regen genes for scoring of human tumor samples 
+fish.human.convert.Z11 <- read.delim("/Volumes/whitelab/Lab Members/Maya Emmons-Bell/Regeneration scRNAseq/Data/GRCz11_to_HS.txt")
+fish.human.convert.Z11 <- fish.human.convert.Z11[fish.human.convert.Z11$DIOPT_Score > 6,]
+
+regen_genes_merged <- merge(x = translated,
+                  y = fish.human.convert.Z11,
+                  by.x = "external_gene_name",
+                  by.y = "Zebrafish_Symbol")
+
+regen_human_genes <- regen_genes_merged$Human_Symbol
+
+```
+
+Run PCA 
+```{r fig1, fig.height = 5, fig.width = 5}
+#variance stabalize data 
+dds_vst <- vst(dds, blind=FALSE)
+plotPCA(dds_vst, intgroup = c("dpa")) + coord_fixed(ratio = 5)
+
+#difference in time point captures 99% of the variation in the data
+
+```
+
+Plotting - violin 
+```{r vln-plot}
+   vplot <- EnhancedVolcano(deseq_df,
+    lab = deseq_df$gene,
+    x = 'log2FoldChange',
+    y = 'padj',
+    title = 'Differential expression: uninjured versus 4DPA caudal fin',
+    pCutoff = 0.01,
+    pointSize = 3.0,
+    labSize = 6.0,
+    col = c("grey", "blue", "darkgreen", "pink"),
+    colAlpha = 1) 
+```
+Plotting - heatmap 
+```{r heatmap}
+#adapted from refine.bio github page 
+
+#normalize, transform data
+dds_norm <- rlog(dds)
+variances <- apply(assay(dds_norm), 1, var)
+
+# Determine the upper quartile variance cutoff value
+upper_var <- quantile(variances, 0.75)
+
+# Filter the data choosing only genes whose variances are in the upper quartile
+df_by_var <- data.frame(assay(dds_norm)) %>%
+  dplyr::filter(variances > upper_var)
+
+
+# Create and store the heatmap object
+anno <- as.data.frame(colData(dds)[,c("sample.id","dpa")])
+
+heatmap <- pheatmap(
+  df_by_var,
+  cluster_rows = TRUE, # Cluster the rows of the heatmap (genes in this case)
+  cluster_cols = TRUE, # Cluster the columns of the heatmap (samples),
+  show_rownames = FALSE, # There are too many genes to clearly show the labels
+  show_colnames = FALSE,
+  main = "Uninjured vs. 4DPA caudal fin tissue",
+  annotation_col = anno,
+  colorRampPalette(c(
+    "deepskyblue",
+    "black",
+    "yellow"
+  ))(25
+  ),
+  scale = "row" # Scale values in the direction of genes (rows)
+)
+
+```
+
+
