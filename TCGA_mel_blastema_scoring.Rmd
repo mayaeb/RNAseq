@@ -1,0 +1,239 @@
+---
+title: "TCGA_SKCM_blastema_scoring"
+author: "Maya Emmons-Bell"
+date: '2022-06-08'
+output: html_document
+---
+
+Using data from the TCGA SKCM project (human melanoma transcriptomics data from more than 400 patients), explore correlations between blastema-like gene expression and
+tumor type (primary, metastatic), days to death, etc. 
+
+To score each sample for expression of "blastema-like" gene modules, I'm using ssGSEA and GSVA (https://bmcbioinformatics.biomedcentral.com/articles/10.1186/1471-2105-14-7)
+
+Found that blastema module score is weakly correlated with days to death (p=0.02), and tumor type (p=0.03). 
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+load libraries 
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(biomaRt)
+library(EnsDb.Hsapiens.v86)
+library(dplyr)
+library(tidyverse)
+library(clusterProfiler)
+library(msigdbr)
+library(org.Hs.eg.db)
+library(GSVA)
+library(gplots)
+library(grid)
+```
+
+Pre-process transcriptome data from the TCGA-SKCM project. 
+Data was downloaded from TCGA using a custom R script (found in same GitHub repo).
+```{r}
+#get ensembl IDs to translate (remove first entry, which is the "barcode" col name)
+# also remove the ".X" version number so IDs match reference (with #%>% gsub("\\..*", "",.) ); have to do this for my custom function for now
+ensids_to_translate <- colnames(rpkm) %>% .[-1] %>% gsub("\\..*", "",.) %>% as.data.frame()
+colnames(ensids_to_translate) <- c("gene")
+ 
+#translate ensemblIDs using biomaRt (function takes in character vector of ensemblIDs, returns vector of associated gene symbols. un-mapped IDs are returned as "NA")
+translated <- mebfunctions::meb_translateEnsIDs_hsapiens(ensids_to_translate)
+#bugs to fix -- returns empty, not NA
+
+translated <- data.frame(
+  gene_symbol = mapIds(
+    # Replace with annotation package for the organism relevant to your data
+    org.Hs.eg.db,
+    keys = ensids_to_translate$gene,
+    # Replace with the type of gene identifiers in your data
+    keytype = "ENSEMBL",
+    # Replace with the type of gene identifiers you would like to map to
+    column = "SYMBOL",
+    # This will keep only the first mapped value for each Ensembl ID
+    multiVals = "first"
+  )
+)
+
+translated_genes <- translated$gene_symbol
+
+head(translated)
+translated_genes <- append("sample", translated_genes)
+colnames(rpkm) <- translated_genes
+
+#drop un-translated genes
+rpkm_filtered <- rpkm[!is.na(names(rpkm))]
+
+```
+
+We now have a nice expression matrix (samples X genes)
+Since this TCGA project is level 2, the data has already been normalized 
+Define blastema modules (from single-cell and bulk datasets) 
+
+These gene sets were identified by transcriptomics analysis of caudal fin tissue samples across a timecourse of regeneration.
+```{r}
+sc_blastema_genes <- c("HMGB2", "KRT18", "HMGN2", "F3", "KRT4", "PDGFRA", "COL1A1", "SERPINE1", "TNFAIP6", "CFL1", 
+              "NPM1", "VMP1", "PCP4",  "ECRG4", "POSTN", "SPARC", "LEP", "OGN", "C1QTNF5", "HMGA1", "H3-3A", "STMN1", "RPA2", "PCNA", "CCN1", 
+              "BHMT", "HGD", "PTGDS")
+#analysis used to produce this gene set in "scRNAseq" repo
+
+bulk_regen_genes <- c("ADAM8", "AURKA", "C1QTNF5", "C1QTNF6", "CCNB1", "CD248", "CHST1", "COL10A1", "COL11A1", "COL8A1", "CSDC2", "DACT2", "EFEMP2", "FKBP9", "FREM2", "FREM2", "GPX7", "HRH3", "HYAL4", "KPNA2", "LDLRAD2", "MMP11", "OLFM3", "PCP4", "PDLIM3", "PHOSPHO1", "PLK1", "RCN3", "S100A1", "SIGLEC15", "SLC13A5", "SLC1A4", "SLC22A7", "SPAM1", "TNC", "TPH1", "TUBB", "WFIKKN2" )
+#analysis used to produce this gene set in "Kang et al..." file in this repo
+
+#select only blastema gene expression 
+rpkm_filtered_blastema_gene_subset <- rpkm_filtered %>% dplyr::select(sample, bulk_regen_genes)
+
+#sum total expression of blastema genes 
+rpkm_filtered_blastema_gene_subset$total_blastema_expn <- rowSums(rpkm_filtered_blastema_gene_subset[,2:38])
+#calculate percentage of all reads that are blastema genes
+rpkm_filtered_blastema_gene_subset$total_expn <- rowSums(rpkm_filtered[,2:35378])
+rpkm_filtered_blastema_gene_subset$ratio_blastema <- ((rpkm_filtered_blastema_gene_subset$total_blastema_expn) / (rpkm_filtered_blastema_gene_subset$total_expn ))*100
+
+```
+
+Out of curiosity, I wanted to see the distribution of the ratio of blastema counts/total counts -- there's some skew
+```{r}
+#select only blastema gene expression -- swap out the gene set (bulk vs sc) you're interested in 
+rpkm_filtered_blastema_gene_subset <- rpkm_filtered %>% dplyr::select(sample, bulk_regen_genes)
+
+#sum total expression of blastema genes 
+rpkm_filtered_blastema_gene_subset$total_blastema_expn <- rowSums(rpkm_filtered_blastema_gene_subset[,2:38])
+#calculate percentage of all reads that are blastema genes
+rpkm_filtered_blastema_gene_subset$total_expn <- rowSums(rpkm_filtered[,2:35378])
+rpkm_filtered_blastema_gene_subset$ratio_blastema <- ((rpkm_filtered_blastema_gene_subset$total_blastema_expn) / (rpkm_filtered_blastema_gene_subset$total_expn ))*100
+
+
+#plot distribution 
+p1 <-rpkm_filtered_blastema_gene_subset %>%
+  ggplot(aes(x=ratio_blastema)) +
+  geom_density(fill="yellow")
+#there's some skew 
+#worth exploring if those samples have different outcomes
+```
+
+Module scoring with ssGSEA (from GSVA package)
+```{r}
+#generate expression matrix (columns are samples, rows are genes)
+ssGSEA_matrix <- rpkm_filtered %>% as.matrix() %>% t() %>% as.data.frame()
+colnames(ssGSEA_matrix) <- ssGSEA_matrix[1,]
+ssGSEA_matrix <- ssGSEA_matrix[-1,]
+ssGSEA_matrix <- as.matrix(ssGSEA_matrix)
+ssGSEA_matrix <- as.data.frame(ssGSEA_matrix)
+head(ssGSEA_matrix)
+
+ssGSEA_matrix_numeric <- apply(ssGSEA_matrix, 2, as.numeric)
+rownames(ssGSEA_matrix_numeric) <- rownames(ssGSEA_matrix) 
+ssGSEA_matrix_numeric <- as.matrix(ssGSEA_matrix_numeric)
+
+#generate random sampling of genes as control set 
+control_genes <- sample(rownames(ssGSEA_matrix), 50) %>% as.vector()
+
+ssGSEA_gene_lists <- setNames(list(control_genes, bulk_regen_genes), c("control", "blastema"))
+
+#run ssGSEA
+ssGSEA_result <- gsva(ssGSEA_matrix_numeric,
+                      gset.idx.list=ssGSEA_gene_lists,
+                      method='ssgsea',
+                      ssgsea.norm=F, 
+                      mx.diff = FALSE)
+
+ssGSEA_result <- ssGSEA_result %>% as.matrix() %>% t() %>% as.data.frame()
+
+#run gsva
+gsva_result <- gsva(ssGSEA_matrix_numeric,
+                      gset.idx.list=ssGSEA_gene_lists,
+                      method='gsva',
+                      kcdf = "Gaussian",
+                      ssgsea.norm=F, 
+                      mx.diff = TRUE,
+                      verbose = FALSE)
+
+gsva_result <- gsva_result %>% as.matrix() %>% t() %>% as.data.frame()
+
+#write results to file 
+ssGSEA_result %>%
+  readr::write_tsv(
+    "TCGA_SKCM_bulk_geneset_gsva_results.tsv"
+  )
+
+
+#plot distribution of blastema gene set scores 
+p1 <-gsva_result %>%
+  ggplot(aes(x=blastema)) +
+  geom_density(fill="yellow")
+
+#plot distribution of control gene set scores 
+p2 <-gsva_result %>%
+  ggplot(aes(x=control)) +
+  geom_density(fill="yellow")
+
+p1|p2
+
+```
+GSVA viz - heatmap 
+```{r fig.height=3, fig.width=5}
+#get metadata for patients to create heatmap and explore correlation of blastema module scores with prognosis 
+annotations <- metadata %>% dplyr::select(
+  barcode, definition, sample_type, ajcc_pathologic_stage, vital_status, days_to_death, age_at_index, paper_RNASEQ.CLUSTER_CONSENHIER,
+  paper_MethTypes.201408
+)
+
+def_annotations <- metadata %>% dplyr::select(definition)
+vital_status_annotations <- metadata %>% dplyr::select(vital_status)
+days_to_death_annotations <- metadata %>% dplyr::select(days_to_death)
+ajcc_pathologic_stage_annotations <- metadata %>% dplyr::select(ajcc_pathologic_stage)
+age_annotations <- metadata %>% dplyr::select(age_at_index)
+immune_annotations <- metadata %>% dplyr::select(paper_RNASEQ.CLUSTER_CONSENHIER)
+meth_annotations <- metadata %>% dplyr::select(paper_MethTypes.201408)
+
+#transpose results dataframe 
+gsva_result_forplotting <- gsva_result %>% as.matrix() %>% t() %>% as.data.frame()
+
+#make heatmaps for each metadata annotation of interest
+immune_heatmap <- pheatmap::pheatmap(gsva_result_forplotting,
+  annotation_col = immune_annotations, 
+  show_colnames = FALSE, 
+  fontsize_row = 6, 
+  annotation_legend = FALSE
+)
+
+#look at heatmaps
+def_heatmap
+vital_status_heatmap
+days_to_death_heatmap
+age_heatmap
+immune_heatmap
+meth_heatmap
+```
+
+Modeling - linear regression 
+```{r}
+#add blastema score information from gsva to metadata
+lm_data <- metadata %>% mutate(blastema_score = gsva_result$blastema)
+
+#create linear regression 
+lm_definition = lm(blastema_score~days_to_death, data = lm_data)
+summary(lm_definition) 
+
+#blastema score is correlated with definition (p = 0.03)
+#blastema score is correlated with days to death (p = 0.02)
+
+#take a look at some model stats 
+plot(lm_definition$residuals, pch = 16, col = "red")
+plot(cooks.distance(lm_definition), pch = 16, col = "blue")
+
+# plot blastema score by days to death, add linear reg
+death_plot <- ggplot(lm_data, aes(days_to_death, blastema_score)) +
+  geom_point() +
+  stat_smooth(method = "lm", col ="darkgreen")+
+  theme_bw() +
+  ggtitle("TCGA-SKCM transcriptomes (473 human melanoma samples)")
+
+```
+
+
+
