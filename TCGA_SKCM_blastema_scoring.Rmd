@@ -42,9 +42,6 @@ ensids_to_translate <- colnames(rpkm) %>% .[-1] %>% gsub("\\..*", "",.) %>% as.d
 colnames(ensids_to_translate) <- c("gene")
  
 #translate ensemblIDs using biomaRt (function takes in character vector of ensemblIDs, returns vector of associated gene symbols. un-mapped IDs are returned as "NA")
-translated <- mebfunctions::meb_translateEnsIDs_hsapiens(ensids_to_translate)
-#bugs to fix -- returns empty, not NA
-
 translated <- data.frame(
   gene_symbol = mapIds(
     # Replace with annotation package for the organism relevant to your data
@@ -83,15 +80,6 @@ sc_blastema_genes <- c("HMGB2", "KRT18", "HMGN2", "F3", "KRT4", "PDGFRA", "COL1A
 
 bulk_regen_genes <- c("ADAM8", "AURKA", "C1QTNF5", "C1QTNF6", "CCNB1", "CD248", "CHST1", "COL10A1", "COL11A1", "COL8A1", "CSDC2", "DACT2", "EFEMP2", "FKBP9", "FREM2", "FREM2", "GPX7", "HRH3", "HYAL4", "KPNA2", "LDLRAD2", "MMP11", "OLFM3", "PCP4", "PDLIM3", "PHOSPHO1", "PLK1", "RCN3", "S100A1", "SIGLEC15", "SLC13A5", "SLC1A4", "SLC22A7", "SPAM1", "TNC", "TPH1", "TUBB", "WFIKKN2" )
 #analysis used to produce this gene set in "Kang et al..." file in this repo
-
-#select only blastema gene expression 
-rpkm_filtered_blastema_gene_subset <- rpkm_filtered %>% dplyr::select(sample, bulk_regen_genes)
-
-#sum total expression of blastema genes 
-rpkm_filtered_blastema_gene_subset$total_blastema_expn <- rowSums(rpkm_filtered_blastema_gene_subset[,2:38])
-#calculate percentage of all reads that are blastema genes
-rpkm_filtered_blastema_gene_subset$total_expn <- rowSums(rpkm_filtered[,2:35378])
-rpkm_filtered_blastema_gene_subset$ratio_blastema <- ((rpkm_filtered_blastema_gene_subset$total_blastema_expn) / (rpkm_filtered_blastema_gene_subset$total_expn ))*100
 
 ```
 
@@ -174,6 +162,7 @@ p2 <-gsva_result %>%
 p1|p2
 
 ```
+
 GSVA viz - heatmap 
 ```{r fig.height=3, fig.width=5}
 #get metadata for patients to create heatmap and explore correlation of blastema module scores with prognosis 
@@ -194,8 +183,8 @@ meth_annotations <- metadata %>% dplyr::select(paper_MethTypes.201408)
 gsva_result_forplotting <- gsva_result %>% as.matrix() %>% t() %>% as.data.frame()
 
 #make heatmaps for each metadata annotation of interest
-immune_heatmap <- pheatmap::pheatmap(gsva_result_forplotting,
-  annotation_col = immune_annotations, 
+stage_heatmap <- pheatmap::pheatmap(gsva_result,
+  annotation_col = ajcc_pathologic_stage_annotations, 
   show_colnames = FALSE, 
   fontsize_row = 6, 
   annotation_legend = FALSE
@@ -208,6 +197,7 @@ days_to_death_heatmap
 age_heatmap
 immune_heatmap
 meth_heatmap
+
 ```
 
 Modeling - linear regression 
@@ -216,7 +206,7 @@ Modeling - linear regression
 lm_data <- metadata %>% mutate(blastema_score = gsva_result$blastema)
 
 #create linear regression 
-lm_definition = lm(blastema_score~days_to_death, data = lm_data)
+lm_definition = lm(blastema_score~definition, data = lm_data)
 summary(lm_definition) 
 
 #blastema score is correlated with definition (p = 0.03)
