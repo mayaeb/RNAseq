@@ -222,7 +222,6 @@ death_plot <- ggplot(lm_data, aes(days_to_death, blastema_score)) +
   stat_smooth(method = "lm", col ="darkgreen")+
   theme_bw() +
   ggtitle("TCGA-SKCM transcriptomes (473 human melanoma samples)")
-
 ```
 
 
