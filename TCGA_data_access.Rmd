@@ -27,16 +27,15 @@ data <- TCGAbiolinks:::getProjectSummary("TCGA-SKCM")$data_categories
 
 query_TCGA <- GDCquery(
   project = "TCGA-SKCM",
-  data.category = "Proteome Profiling",
-  data.type = "Protein Expression Quantification",
-  experimental.strategy = "Reverse Phase Protein Array",
+  data.category = "Transcriptome Profiling",
+  data.type = "Gene Expression Quantification",
   barcode = c("TCGA-*")) # parameter enforced by GDCquery
 
 
 GDCdownload(query = query_TCGA, method = "api", files.per.chunk = 100)
 tcga_data <- GDCprepare(query_TCGA, summarizedExperiment = TRUE)
-saveRDS(tcga_data,file = "TCGA_SKCM_protein.rds")
-tcga_data <- readRDS("TCGA_SKCM_protein.rds")
+saveRDS(tcga_data,file = "TCGA_SKCM.rds")
+tcga_data <- readRDS("~/Desktop/TCGA_SKCM.rds")
 
 #extract metadata and gene expression data for downstream analysis 
 metadata <- as.data.frame(colData(tcga_data))
